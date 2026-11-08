@@ -167,7 +167,7 @@ class BotListener(threading.Thread):
         }
         TelegramNotifier(self.config_path).send_message(
             chat_id,
-            "Ссылка принята. Выберите режим работы задания.",
+            "Ссылка принята. Выберите режим работы запроса.",
             reply_markup=markup,
         )
 

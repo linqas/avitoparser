@@ -3551,7 +3551,7 @@ class AvitoRadarApp(ctk.CTk):
         if not configs:
             raise FilterError(
                 "Нет обычных запросов для ручного запуска. "
-                "Задания из Telegram запускаются командой в боте."
+                "Запросы из Telegram запускаются командой в боте."
             )
         return configs
 
@@ -4111,7 +4111,7 @@ class AvitoRadarApp(ctk.CTk):
         if getattr(self, "bot_manager", None) and self.bot_manager.current_job_id:
             messagebox.showinfo(
                 "Avito Radar",
-                "Сейчас выполняется задание из Telegram. Дождитесь его завершения "
+                "Сейчас выполняется запрос из Telegram. Дождитесь его завершения "
                 "или остановите его командой /stop в боте.",
             )
             return
