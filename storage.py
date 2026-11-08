@@ -119,6 +119,13 @@ CREATE TABLE IF NOT EXISTS bot_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_bot_jobs_chat ON bot_jobs(chat_id, status);
 
+CREATE TABLE IF NOT EXISTS bot_states (
+    chat_id    INTEGER PRIMARY KEY,
+    state      TEXT NOT NULL,
+    payload    TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status);
 CREATE INDEX IF NOT EXISTS idx_listings_price ON listings(price);
 CREATE INDEX IF NOT EXISTS idx_price_history_listing
@@ -624,6 +631,40 @@ class Storage:
         with self._lock:
             return [dict(row) for row in self._conn.execute(query, params).fetchall()]
 
+    def get_bot_state(self, chat_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM bot_states WHERE chat_id = ?", (int(chat_id),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def set_bot_state(
+        self, chat_id: int, state: str, payload: dict[str, Any] | None = None
+    ) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO bot_states(chat_id, state, payload, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    state = excluded.state,
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(chat_id),
+                    str(state),
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    iso_now(),
+                ),
+            )
+
+    def clear_bot_state(self, chat_id: int) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM bot_states WHERE chat_id = ?", (int(chat_id),)
+            )
+
     def get_bot_job(self, job_id: int) -> dict[str, Any] | None:
         with self._lock:
             row = self._conn.execute(
@@ -1013,6 +1054,19 @@ class Storage:
             ).fetchone()
             return str(row["value"]) if row else default
 
+    def set_collector_state(self, payload: dict[str, Any]) -> None:
+        data = dict(payload or {})
+        data["updated_at"] = iso_now()
+        self.set_meta("collector_state", json.dumps(data, ensure_ascii=False))
+
+    def get_collector_state(self) -> dict[str, Any]:
+        raw = self.get_meta("collector_state", "{}")
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def save_digest(self, digest_id: str, payload: dict[str, Any]) -> None:
         timestamp = iso_now()
         with self._lock, self._conn:
@@ -1042,6 +1096,29 @@ class Storage:
         except (TypeError, ValueError):
             return None
         return payload if isinstance(payload, dict) else None
+
+    def list_digests(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, payload, created_at FROM digests "
+                "ORDER BY created_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                result.append(
+                    {
+                        "id": str(row["id"]),
+                        "payload": payload,
+                        "created_at": row["created_at"],
+                    }
+                )
+        return result
 
     def set_meta(self, key: str, value: str) -> None:
         with self._lock, self._conn:

@@ -126,7 +126,7 @@ def digest_summary_text(payload: dict[str, Any]) -> str:
 
 
 def sorted_digest_items(
-    payload: dict[str, Any], sort_key: str = "date"
+    payload: dict[str, Any], sort_key: str = "date", *, local_first: bool = False
 ) -> list[dict[str, Any]]:
     items = digest_items(payload)
     if sort_key in {"price", "price_asc"}:
@@ -160,6 +160,13 @@ def sorted_digest_items(
             ),
             reverse=True,
         )
+    city = str(payload.get("city") or "").strip().casefold()
+    if local_first and city and city != "вся россия":
+        items.sort(
+            key=lambda item: 0
+            if city in str((item.get("listing") or {}).get("city") or "").casefold()
+            else 1
+        )
     return items
 
 
@@ -168,8 +175,10 @@ def digest_page_text(
     page: int = 0,
     per_page: int = 10,
     sort_key: str = "date",
+    *,
+    local_first: bool = False,
 ) -> str:
-    items = sorted_digest_items(payload, sort_key)
+    items = sorted_digest_items(payload, sort_key, local_first=local_first)
     total_pages = digest_total_pages(payload, per_page)
     page = max(0, min(int(page), total_pages - 1))
     start = page * per_page
@@ -210,16 +219,20 @@ def digest_page_keyboard(
     page: int,
     total_pages: int,
     sort_key: str = "date",
+    *,
+    local_first: bool = False,
+    city: str = "",
 ) -> dict[str, Any]:
+    flag = "1" if local_first else "0"
     nav: list[dict[str, str]] = []
     if page > 0:
         nav.append(
-            {"text": "◀ Назад", "callback_data": f"d:{digest_id}:{page - 1}"}
+            {"text": "◀ Назад", "callback_data": f"d:{digest_id}:{page - 1}:{flag}"}
         )
     nav.append({"text": f"{page + 1}/{total_pages}", "callback_data": f"n:{digest_id}"})
     if page + 1 < total_pages:
         nav.append(
-            {"text": "Ещё ▶", "callback_data": f"d:{digest_id}:{page + 1}"}
+            {"text": "Ещё ▶", "callback_data": f"d:{digest_id}:{page + 1}:{flag}"}
         )
     labels = {
         "date": "Дата",
@@ -230,20 +243,30 @@ def digest_page_keyboard(
     sort_row = [
         {
             "text": ("✓ " if value == sort_key else "") + label,
-            "callback_data": f"s:{digest_id}:{value}",
+            "callback_data": f"s:{digest_id}:{value}:{flag}",
         }
         for value, label in labels.items()
     ]
-    return {
-        "inline_keyboard": [
-            sort_row,
+    rows = [sort_row]
+    if city.strip() and city.strip().casefold() != "вся россия":
+        rows.append(
+            [
+                {
+                    "text": ("✓ " if local_first else "") + "Мой город",
+                    "callback_data": f"l:{digest_id}:{1 if not local_first else 0}",
+                }
+            ]
+        )
+    rows.extend(
+        [
             nav,
             [
                 {"text": "Скачать XLSX", "callback_data": f"x:{digest_id}"},
                 {"text": "Закрыть", "callback_data": f"c:{digest_id}"},
             ],
         ]
-    }
+    )
+    return {"inline_keyboard": rows}
 
 
 def listing_caption(listing: dict[str, Any]) -> str:

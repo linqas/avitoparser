@@ -1179,7 +1179,16 @@ class BotJobManager(threading.Thread):
         job_id = int(job["id"])
 
         def on_cycle(listings, stats, cycle, rejected):
-            self.storage.update_bot_job(job_id, first_run_done=1)
+            next_run = ""
+            if job["mode"] == "interval":
+                from datetime import timedelta
+                next_run = (
+                    datetime.now().astimezone()
+                    + timedelta(minutes=interval)
+                ).strftime("%H:%M")
+            self.storage.update_bot_job(
+                job_id, first_run_done=1, next_run_at=next_run
+            )
             self.ui_queue.put(
                 ("cycle", {"listings": listings, "stats": stats, "cycle": cycle, "rejected": rejected})
             )
@@ -1214,6 +1223,15 @@ class BotJobManager(threading.Thread):
             status="running",
             last_run_at=datetime.now().isoformat(timespec="seconds"),
         )
+        self.storage.set_collector_state(
+            {
+                "status": "running",
+                "kind": "telegram",
+                "job_id": int(job["id"]),
+                "query": query.query,
+                "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
+        )
         worker.start()
         worker.join()
         self.storage.update_bot_job(
@@ -1222,6 +1240,7 @@ class BotJobManager(threading.Thread):
             first_run_done=1,
             last_run_at=datetime.now().isoformat(timespec="seconds"),
         )
+        self.storage.set_collector_state({"status": "idle"})
         self.current_job_id = None
         self.current_worker = None
         self.ui_queue.put(("bot_jobs_changed", None))
@@ -4102,6 +4121,14 @@ class AvitoRadarApp(ctk.CTk):
             ),
         )
         self.worker.start()
+        self.storage.set_collector_state(
+            {
+                "status": "running",
+                "kind": "manual",
+                "query": ", ".join(config.query for config in query_configs)[:200],
+                "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
+        )
 
     def _toggle_browser(self) -> None:
         if not (self.worker and self.worker.is_alive()):
@@ -4507,6 +4534,7 @@ class AvitoRadarApp(ctk.CTk):
                         )
 
                 elif kind == "finished":
+                    self.storage.set_collector_state({"status": "idle"})
                     self._set_running(False)
                     self.status_label.configure(
                         text=str(payload),
