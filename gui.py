@@ -1108,6 +1108,119 @@ DELIVERY_UI_TO_INTERNAL = {
 }
 
 
+class BotJobManager(threading.Thread):
+    """Последовательный запуск заданий, созданных в Telegram."""
+
+    def __init__(
+        self,
+        storage: Storage,
+        notifier: TelegramNotifier,
+        config: dict[str, Any],
+        config_path: str | Path,
+        ui_queue: queue.Queue,
+        is_manual_busy: Callable[[], bool],
+    ) -> None:
+        super().__init__(name="AvitoRadarBotJobs", daemon=True)
+        self.storage = storage
+        self.notifier = notifier
+        self.config = config
+        self.config_path = Path(config_path)
+        self.ui_queue = ui_queue
+        self.is_manual_busy = is_manual_busy
+        self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
+        self.current_job_id: int | None = None
+        self.current_worker: MonitorWorker | None = None
+
+    def wake(self) -> None:
+        self._wake_event.set()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._wake_event.set()
+        if self.current_worker is not None:
+            self.current_worker.request_stop()
+
+    def _job_worker(self, job: dict[str, Any]) -> None:
+        query_row = self.storage.get_saved_query(int(job["query_id"]))
+        if not query_row:
+            self.storage.update_bot_job(int(job["id"]), status="error")
+            return
+        query = QueryConfig.from_row(query_row)
+        query.is_active = True
+        mode = MODE_ONCE if job["mode"] == "once" else MODE_EVERY_N
+        interval = max(1, int(job.get("interval_minutes") or 15))
+        worker = MonitorWorker(
+            storage=self.storage,
+            notifier=self.notifier,
+            config=self.config,
+            config_path=self.config_path,
+            queries=[query],
+            recipients=[int(job["chat_id"])],
+            mode_label=mode,
+            interval_minutes=interval,
+            sort_key="date",
+            on_status=lambda text: self.ui_queue.put(("status", text)),
+            on_error=lambda text, modal: self.ui_queue.put(
+                ("error", {"message": text, "modal": modal})
+            ),
+            on_cycle=lambda listings, stats, cycle, rejected: self.ui_queue.put(
+                ("cycle", {"listings": listings, "stats": stats, "cycle": cycle, "rejected": rejected})
+            ),
+            on_finished=lambda reason: self.ui_queue.put(("bot_job_finished", reason)),
+            on_browser_visibility=lambda visible: self.ui_queue.put(
+                ("browser_visibility", visible)
+            ),
+        )
+        self.current_job_id = int(job["id"])
+        self.current_worker = worker
+        self.storage.update_bot_job(
+            int(job["id"]),
+            status="running",
+            last_run_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        worker.start()
+        worker.join()
+        self.storage.update_bot_job(
+            int(job["id"]),
+            status="done" if job["mode"] == "once" else "stopped",
+            first_run_done=1,
+            last_run_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        self.current_job_id = None
+        self.current_worker = None
+        self.ui_queue.put(("bot_jobs_changed", None))
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            if self.current_worker is not None and self.current_worker.is_alive():
+                job = (
+                    self.storage.get_bot_job(self.current_job_id)
+                    if self.current_job_id is not None
+                    else None
+                )
+                if job and str(job.get("status")) == "stopped":
+                    self.current_worker.request_stop()
+                self._wake_event.wait(2)
+                self._wake_event.clear()
+                continue
+            if self.is_manual_busy():
+                self._wake_event.wait(5)
+                self._wake_event.clear()
+                continue
+            jobs = [
+                job
+                for job in self.storage.list_bot_jobs(active_only=True)
+                if job.get("mode") in {"once", "interval"}
+                and str(job.get("status")) in {"pending", "waiting"}
+            ]
+            if not jobs:
+                self._wake_event.wait(5)
+                self._wake_event.clear()
+                continue
+            self._job_worker(jobs[0])
+
+
 class QueryCard(ctk.CTkFrame):
     """Карточка одного запроса со своими фильтрами."""
 
@@ -1968,6 +2081,15 @@ class AvitoRadarApp(ctk.CTk):
         self.bind_all("<Shift-Insert>", self._global_paste, add="+")
         self.bind_all("<<Paste>>", self._global_paste, add="+")
         self.bind("<FocusIn>", lambda _event: apply_light_titlebar(self), add="+")
+        self.bot_manager = BotJobManager(
+            self.storage,
+            self.notifier,
+            self.config,
+            self.config_path,
+            self.ui_queue,
+            lambda: bool(getattr(self, "worker", None) and self.worker.is_alive()),
+        )
+        self.bot_manager.start()
         self._poll_after_id = self.after(120, self._poll_queue)
         self._start_bot_listener()
         count = len(self.storage.get_subscribers())
@@ -3819,6 +3941,13 @@ class AvitoRadarApp(ctk.CTk):
     def _on_start(self) -> None:
         if self.worker and self.worker.is_alive():
             return
+        if getattr(self, "bot_manager", None) and self.bot_manager.current_job_id:
+            messagebox.showinfo(
+                "Avito Radar",
+                "Сейчас выполняется задание из Telegram. Дождитесь его завершения "
+                "или остановите его командой /stop в боте.",
+            )
+            return
         if not self.query_cards:
             messagebox.showwarning(
                 "Avito Radar", "Добавьте хотя бы один поисковый запрос."
@@ -4103,6 +4232,7 @@ class AvitoRadarApp(ctk.CTk):
             self.storage,
             self.config_path,
             on_subscribers_changed=lambda: self.ui_queue.put(("subscribers", None)),
+            on_jobs_changed=lambda: self.bot_manager.wake(),
             on_error=lambda message: (
                 self.ui_queue.put(("telegram_error", message)),
                 self.ui_queue.put(("error", {"message": message, "modal": True})),
@@ -4434,6 +4564,9 @@ class AvitoRadarApp(ctk.CTk):
             self.worker.request_stop()
         if self.bot_listener and self.bot_listener.is_alive():
             self.bot_listener.stop()
+        if getattr(self, "bot_manager", None):
+            self.bot_manager.stop()
+            self.bot_manager.join(timeout=5)
         logger.info("Закрытие Avito Radar")
         logging.getLogger().removeHandler(self._log_handler)
         self._wait_for_worker_and_close(time.monotonic() + 10)

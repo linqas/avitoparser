@@ -530,6 +530,13 @@ class Storage:
 
     # --------------------------- saved queries --------------------------
 
+    def get_saved_query(self, query_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM saved_queries WHERE id = ?", (int(query_id),)
+            ).fetchone()
+            return dict(row) if row else None
+
     def list_saved_queries(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
