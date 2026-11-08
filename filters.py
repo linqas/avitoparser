@@ -445,6 +445,7 @@ class QueryConfig:
     notify_new: bool = True
     notify_price: bool = True
     notify_old: bool = False
+    origin: str = "app"
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> "QueryConfig":
@@ -476,6 +477,7 @@ class QueryConfig:
             notify_new=bool(row.get("notify_new", 1)),
             notify_price=bool(row.get("notify_price", 1)),
             notify_old=bool(row.get("notify_old", 0)),
+            origin=str(row.get("origin") or "app"),
         )
 
     def criteria(self) -> FilterCriteria:

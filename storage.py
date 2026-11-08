@@ -98,9 +98,26 @@ CREATE TABLE IF NOT EXISTS saved_queries (
     notify_new    INTEGER NOT NULL DEFAULT 1,
     notify_price  INTEGER NOT NULL DEFAULT 1,
     notify_old    INTEGER NOT NULL DEFAULT 0,
+    origin        TEXT NOT NULL DEFAULT 'app',
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bot_jobs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_id         INTEGER NOT NULL REFERENCES saved_queries(id) ON DELETE CASCADE,
+    chat_id          INTEGER NOT NULL,
+    username         TEXT NOT NULL DEFAULT '',
+    mode             TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (mode IN ('pending', 'once', 'interval')),
+    interval_minutes INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    first_run_done   INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL,
+    last_run_at      TEXT NOT NULL DEFAULT '',
+    next_run_at      TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_bot_jobs_chat ON bot_jobs(chat_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status);
 CREATE INDEX IF NOT EXISTS idx_listings_price ON listings(price);
@@ -193,6 +210,9 @@ class Storage:
                 )
             self._ensure_column(
                 "saved_queries", "is_active", "INTEGER NOT NULL DEFAULT 1"
+            )
+            self._ensure_column(
+                "saved_queries", "origin", "TEXT NOT NULL DEFAULT 'app'"
             )
             for column, default in (
                 ("notify_new", 1),
@@ -516,6 +536,68 @@ class Storage:
                 "SELECT * FROM saved_queries ORDER BY sort_order, id"
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def create_bot_job(
+        self,
+        query_id: int,
+        chat_id: int,
+        username: str = "",
+        *,
+        mode: str = "pending",
+        interval_minutes: int = 0,
+    ) -> int:
+        now = iso_now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO bot_jobs(
+                    query_id, chat_id, username, mode, interval_minutes,
+                    status, first_run_done, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)
+                """,
+                (int(query_id), int(chat_id), username or "", mode,
+                 max(0, int(interval_minutes)), now),
+            )
+            return int(cursor.lastrowid)
+
+    def list_bot_jobs(
+        self, *, chat_id: int | None = None, active_only: bool = False
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM bot_jobs"
+        params: list[Any] = []
+        clauses: list[str] = []
+        if chat_id is not None:
+            clauses.append("chat_id = ?")
+            params.append(int(chat_id))
+        if active_only:
+            clauses.append("status IN ('pending', 'running', 'waiting')")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id"
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(query, params).fetchall()]
+
+    def get_bot_job(self, job_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM bot_jobs WHERE id = ?", (int(job_id),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def update_bot_job(self, job_id: int, **values: Any) -> None:
+        allowed = {
+            "mode", "interval_minutes", "status", "first_run_done",
+            "last_run_at", "next_run_at",
+        }
+        updates = {key: value for key, value in values.items() if key in allowed}
+        if not updates:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in updates)
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"UPDATE bot_jobs SET {assignments} WHERE id = ?",
+                (*updates.values(), int(job_id)),
+            )
 
     def save_saved_query(
         self,
