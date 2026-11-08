@@ -27,7 +27,9 @@ from storage import Storage
 from utils import (
     DEFAULT_CONFIG_PATH,
     get_telegram_token,
+    is_avito_search_url,
     load_config,
+    parse_avito_search_url,
     redact_secrets,
 )
 
@@ -41,6 +43,7 @@ class BotListener(threading.Thread):
         config_path: str | Path | None = None,
         *,
         on_subscribers_changed: Callable[[], None] | None = None,
+        on_jobs_changed: Callable[[], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_ready: Callable[[str], None] | None = None,
     ):
@@ -48,6 +51,7 @@ class BotListener(threading.Thread):
         self.storage = storage
         self.config_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
         self.on_subscribers_changed = on_subscribers_changed
+        self.on_jobs_changed = on_jobs_changed
         self.on_error = on_error
         self.on_ready = on_ready
         self._stop_event = threading.Event()
@@ -110,17 +114,163 @@ class BotListener(threading.Thread):
         except Exception:
             logger.exception("Ошибка подтверждения подписки")
 
+    def _jobs_changed(self) -> None:
+        if self.on_jobs_changed:
+            try:
+                self.on_jobs_changed()
+            except Exception:
+                logger.debug("Ошибка обновления заданий в GUI", exc_info=True)
+
+    def _send_job_menu(self, chat_id: int, job_id: int) -> None:
+        markup = {
+            "inline_keyboard": [
+                [{"text": "Один раз", "callback_data": f"job:once:{job_id}"}],
+                [
+                    {"text": "Каждые 15 минут", "callback_data": f"job:interval:{job_id}:15"},
+                ],
+                [
+                    {"text": "Каждые 30 минут", "callback_data": f"job:interval:{job_id}:30"},
+                ],
+                [
+                    {"text": "Каждые 60 минут", "callback_data": f"job:interval:{job_id}:60"},
+                ],
+            ]
+        }
+        TelegramNotifier(self.config_path).send_message(
+            chat_id,
+            "Ссылка принята. Выберите режим работы задания.",
+            reply_markup=markup,
+        )
+
+    def _create_job_from_url(self, chat_id: int, username: str, url: str) -> None:
+        if not is_avito_search_url(url):
+            TelegramNotifier(self.config_path).send_message(
+                chat_id,
+                "Пришлите ссылку на поиск Avito. Фильтры возьмутся из ссылки.",
+            )
+            return
+        try:
+            parsed = parse_avito_search_url(url)
+            config = self._config()
+            max_listings = int(config.get("app", {}).get("max_listings", 50))
+            row = self.storage.save_saved_query(
+                None,
+                query=parsed["query"],
+                city=parsed["city"],
+                local_priority=parsed["local_priority"],
+                max_listings=max_listings,
+                price_min=parsed["price_min"],
+                price_max=parsed["price_max"],
+                source_url=parsed["source_url"],
+                avito_sort=parsed.get("avito_sort", 0),
+            )
+            self.storage.set_query_origin(int(row["id"]), "telegram")
+            job_id = self.storage.create_bot_job(
+                int(row["id"]), chat_id, username, mode="pending"
+            )
+            self._send_job_menu(chat_id, job_id)
+            self._jobs_changed()
+        except Exception as exc:
+            logger.warning("Не удалось создать задание Telegram: %s", redact_secrets(exc))
+            TelegramNotifier(self.config_path).send_message(
+                chat_id, f"Не удалось принять ссылку: {redact_secrets(exc)}"
+            )
+
+    def _format_jobs(self, chat_id: int) -> str:
+        jobs = self.storage.list_bot_jobs(chat_id=chat_id)
+        if not jobs:
+            return "У вас пока нет заданий."
+        lines = ["Ваши задания:"]
+        for job in jobs:
+            mode = {
+                "pending": "режим не выбран",
+                "once": "один раз",
+                "interval": f"каждые {job.get('interval_minutes')} мин",
+            }.get(str(job.get("mode")), str(job.get("mode")))
+            lines.append(f"#{job['id']} — {mode} — {job.get('status')}")
+        return "\n".join(lines)
+
+    def _handle_job_callback(
+        self, chat_id: int, callback_id: str, parts: list[str], notifier: TelegramNotifier
+    ) -> None:
+        if len(parts) < 3:
+            return
+        try:
+            job_id = int(parts[2])
+        except ValueError:
+            return
+        job = self.storage.get_bot_job(job_id)
+        if not job or int(job["chat_id"]) != int(chat_id):
+            notifier.answer_callback_query(callback_id, "Задание не найдено")
+            return
+        mode = parts[1]
+        if mode == "once":
+            self.storage.update_bot_job(job_id, mode="once", status="pending")
+            notifier.answer_callback_query(callback_id, "Режим: один раз")
+        elif mode == "interval":
+            try:
+                minutes = max(1, int(parts[3]))
+            except (IndexError, ValueError):
+                minutes = 15
+            self.storage.update_bot_job(
+                job_id, mode="interval", interval_minutes=minutes, status="pending"
+            )
+            notifier.answer_callback_query(callback_id, f"Интервал: {minutes} мин")
+        self._jobs_changed()
+
     def _handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat") or {}
         chat_id = chat.get("id")
         if chat_id is None:
             return
         text = str(message.get("text") or "").strip()
-        if not text.startswith("/"):
-            return
-        command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
         username = chat.get("username") or ""
         first_name = chat.get("first_name") or ""
+        if text and is_avito_search_url(text):
+            self._create_job_from_url(chat_id, username, text)
+            return
+        if not text.startswith("/"):
+            TelegramNotifier(self.config_path).send_message(
+                chat_id,
+                "Пришлите ссылку на поиск Avito или используйте /help.",
+            )
+            return
+        command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+
+        if command == "/add":
+            _, _, value = text.partition(" ")
+            value = value.strip()
+            if value:
+                self._create_job_from_url(chat_id, username, value)
+            else:
+                TelegramNotifier(self.config_path).send_message(
+                    chat_id, "Использование: /add https://www.avito.ru/..."
+                )
+            return
+        if command in {"/list", "/status"}:
+            TelegramNotifier(self.config_path).send_message(
+                chat_id, self._format_jobs(chat_id)
+            )
+            return
+        if command == "/stop":
+            _, _, value = text.partition(" ")
+            try:
+                job_id = int(value.strip().lstrip("#"))
+            except ValueError:
+                TelegramNotifier(self.config_path).send_message(
+                    chat_id, "Использование: /stop <номер задания>"
+                )
+                return
+            job = self.storage.get_bot_job(job_id)
+            if not job or int(job["chat_id"]) != int(chat_id):
+                TelegramNotifier(self.config_path).send_message(chat_id, "Задание не найдено.")
+                return
+            self.storage.update_bot_job(job_id, status="stopped")
+            self._jobs_changed()
+            TelegramNotifier(self.config_path).send_message(
+                chat_id, f"Задание #{job_id} остановлено."
+            )
+            return
 
         if command == "/start":
             subscriber = self.storage.upsert_subscriber(chat_id, username, first_name)
@@ -139,17 +289,20 @@ class BotListener(threading.Thread):
             try:
                 TelegramNotifier(self.config_path).send_message(
                     chat_id,
-                    "Avito Radar присылает одну сводку на поисковый запрос. "
-                    "В ней есть кнопки «Показать» для списка по 10 объявлений "
-                    "и «Скачать XLSX».\n\n"
-                    "Команда /start — подписаться на уведомления.",
+                    "Avito Radar: пришлите ссылку на поиск Avito, выберите режим "
+                    "«Один раз» или «Каждые N минут».\n\n"
+                    "/list — мои задания\n"
+                    "/status — статус заданий\n"
+                    "/stop <номер> — остановить задание\n"
+                    "/start — подписаться на уведомления",
                 )
             except NotifierError as exc:
                 logger.warning("Не удалось отправить /help: %s", exc)
         else:
             try:
                 TelegramNotifier(self.config_path).send_message(
-                    chat_id, "Доступные команды: /start — подписаться на уведомления."
+                    chat_id,
+                    "Доступные команды: /start, /add <ссылка>, /list, /stop <номер>, /status, /help.",
                 )
             except NotifierError as exc:
                 logger.warning("Не удалось ответить на команду: %s", exc)
@@ -165,11 +318,13 @@ class BotListener(threading.Thread):
         chat_id = int(chat_id)
         subscriber = self.storage.get_subscriber(chat_id)
         notifier = TelegramNotifier(self.config_path)
+        parts = data.split(":")
+        if parts and parts[0] == "job":
+            self._handle_job_callback(chat_id, callback_id, parts, notifier)
+            return
         if not subscriber or not subscriber.get("is_active"):
             notifier.answer_callback_query(callback_id, "Нет доступа")
             return
-
-        parts = data.split(":")
         if parts and parts[0] == "n":
             notifier.answer_callback_query(callback_id)
             return

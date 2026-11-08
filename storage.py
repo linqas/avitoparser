@@ -758,6 +758,13 @@ class Storage:
                 "DELETE FROM saved_queries WHERE id = ?", (int(query_id),)
             )
 
+    def set_query_origin(self, query_id: int, origin: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE saved_queries SET origin = ?, updated_at = ? WHERE id = ?",
+                (str(origin), iso_now(), int(query_id)),
+            )
+
     def count_saved_queries(self) -> int:
         with self._lock:
             row = self._conn.execute(
