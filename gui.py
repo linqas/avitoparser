@@ -348,8 +348,25 @@ class MonitorWorker(threading.Thread):
         for query_key, group in grouped.items():
             if self.stop_event.is_set():
                 break
+            new_ids = [
+                str((event.get("listing") or {}).get("id"))
+                for event in group
+                if event.get("kind") == "new"
+            ]
+            allowed_new = set(
+                self.storage.filter_unnotified(query_key, new_ids, "new")
+            )
+            group = [
+                event
+                for event in group
+                if event.get("kind") != "new"
+                or str((event.get("listing") or {}).get("id")) in allowed_new
+            ]
+            if not group:
+                continue
             query_config = query_meta.get(query_key)
             payload: dict[str, Any] = {
+                "query_key": query_key,
                 "query": query_config.query if query_config else "Без запроса",
                 "city": (
                     query_config.city
@@ -443,6 +460,15 @@ class MonitorWorker(threading.Thread):
                     f"Ошибка Telegram: {report.failed[0][1]}", modal=True
                 )
             else:
+                self.storage.mark_notified(
+                    query_key,
+                    [
+                        str((event.get("listing") or {}).get("id"))
+                        for event in group
+                        if event.get("kind") == "new"
+                    ],
+                    "new",
+                )
                 logger.info(
                     "Telegram: отправлена сводка по запросу «%s» (%s событий)",
                     payload["query"],
@@ -1150,6 +1176,14 @@ class BotJobManager(threading.Thread):
         query.is_active = True
         mode = MODE_ONCE if job["mode"] == "once" else MODE_EVERY_N
         interval = max(1, int(job.get("interval_minutes") or 15))
+        job_id = int(job["id"])
+
+        def on_cycle(listings, stats, cycle, rejected):
+            self.storage.update_bot_job(job_id, first_run_done=1)
+            self.ui_queue.put(
+                ("cycle", {"listings": listings, "stats": stats, "cycle": cycle, "rejected": rejected})
+            )
+
         worker = MonitorWorker(
             storage=self.storage,
             notifier=self.notifier,
@@ -1164,14 +1198,15 @@ class BotJobManager(threading.Thread):
             on_error=lambda text, modal: self.ui_queue.put(
                 ("error", {"message": text, "modal": modal})
             ),
-            on_cycle=lambda listings, stats, cycle, rejected: self.ui_queue.put(
-                ("cycle", {"listings": listings, "stats": stats, "cycle": cycle, "rejected": rejected})
-            ),
+            on_cycle=on_cycle,
             on_finished=lambda reason: self.ui_queue.put(("bot_job_finished", reason)),
             on_browser_visibility=lambda visible: self.ui_queue.put(
                 ("browser_visibility", visible)
             ),
         )
+        if not int(job.get("first_run_done") or 0):
+            # Для задания из Telegram первый прогон всегда полный снимок.
+            worker.notifications["snapshot"] = True
         self.current_job_id = int(job["id"])
         self.current_worker = worker
         self.storage.update_bot_job(
@@ -1243,6 +1278,7 @@ class QueryCard(ctk.CTkFrame):
         self.sort_order = query_config.sort_order
         self.avito_sort = int(query_config.avito_sort or 0)
         self.source_url = (query_config.source_url or "").strip()
+        self.origin = str(query_config.origin or "app")
         if self.source_url and self.avito_sort == 0:
             try:
                 self.avito_sort = int(
@@ -1872,7 +1908,10 @@ class QueryCard(ctk.CTkFrame):
 
     def _update_title(self) -> None:
         query = self.query_var.get().strip() or "Новый запрос"
-        self.title_label.configure(text=query[:48])
+        label = query[:48]
+        if getattr(self, "origin", "app") == "telegram":
+            label = f"{label} · Telegram"
+        self.title_label.configure(text=label)
         parts: list[str] = []
         city = self.city_var.get().strip()
         if city:
@@ -1892,6 +1931,25 @@ class QueryCard(ctk.CTkFrame):
             parts.append("смарт-фильтр")
         if self.source_url:
             parts.append("по ссылке Avito")
+        if getattr(self, "origin", "app") == "telegram" and self.db_id is not None:
+            try:
+                jobs = [
+                    job
+                    for job in self.app.storage.list_bot_jobs()
+                    if int(job.get("query_id") or 0) == int(self.db_id)
+                ]
+                if jobs:
+                    status = str(jobs[-1].get("status") or "pending")
+                    labels = {
+                        "pending": "ожидает",
+                        "running": "выполняется",
+                        "done": "выполнено",
+                        "stopped": "остановлено",
+                        "error": "ошибка",
+                    }
+                    parts.append("Telegram: " + labels.get(status, status))
+            except Exception:
+                pass
         limit = self.max_listings_combo.get().strip()
         if limit:
             parts.append(f"до {limit} объявл.")
@@ -3105,6 +3163,17 @@ class AvitoRadarApp(ctk.CTk):
         self._update_queries_empty_hint()
         self._solidify_settings_frames(self.settings)
 
+    def _reload_query_cards(self) -> None:
+        """Перечитывает карточки из базы без перезапуска приложения."""
+        self._persist_queries()
+        for card in list(self.query_cards):
+            card.destroy()
+        self.query_cards = []
+        self._empty_queries_label = None
+        self._load_query_cards()
+        self._update_queries_empty_hint()
+        self._refresh_query_options()
+
     def _update_queries_empty_hint(self) -> None:
         if self.query_cards:
             if self._empty_queries_label is not None:
@@ -3422,10 +3491,15 @@ class AvitoRadarApp(ctk.CTk):
         self._persist_queries()
         configs: list[QueryConfig] = []
         for card in self.query_cards:
+            if getattr(card, "origin", "app") == "telegram":
+                continue
             config = card.get_config(validate=True)
             configs.append(config)
         if not configs:
-            raise FilterError("Добавьте хотя бы один поисковый запрос.")
+            raise FilterError(
+                "Нет обычных запросов для ручного запуска. "
+                "Задания из Telegram запускаются командой в боте."
+            )
         return configs
 
     # ---------------------------- recipients ----------------------------
@@ -4232,7 +4306,10 @@ class AvitoRadarApp(ctk.CTk):
             self.storage,
             self.config_path,
             on_subscribers_changed=lambda: self.ui_queue.put(("subscribers", None)),
-            on_jobs_changed=lambda: self.bot_manager.wake(),
+            on_jobs_changed=lambda: (
+                self.ui_queue.put(("bot_jobs_changed", None)),
+                self.bot_manager.wake(),
+            ),
             on_error=lambda message: (
                 self.ui_queue.put(("telegram_error", message)),
                 self.ui_queue.put(("error", {"message": message, "modal": True})),
@@ -4437,6 +4514,8 @@ class AvitoRadarApp(ctk.CTk):
                         text_color=("#333333", "#e0e0e0"),
                     )
                     self._refresh_recipients()
+                elif kind == "bot_jobs_changed":
+                    self._reload_query_cards()
                 elif kind == "subscribers":
                     self._refresh_recipients()
                 elif kind == "telegram_ready":

@@ -125,6 +125,16 @@ CREATE INDEX IF NOT EXISTS idx_price_history_listing
     ON price_history(listing_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_seen_ids_listing ON seen_ids(listing_id);
 
+CREATE TABLE IF NOT EXISTS notified_listings (
+    query_key   TEXT NOT NULL,
+    listing_id  TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    notified_at TEXT NOT NULL,
+    PRIMARY KEY (query_key, listing_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_notified_listing
+    ON notified_listings(query_key, listing_id);
+
 CREATE TABLE IF NOT EXISTS digests (
     id         TEXT PRIMARY KEY,
     payload    TEXT NOT NULL,
@@ -543,6 +553,36 @@ class Storage:
                 "SELECT * FROM saved_queries ORDER BY sort_order, id"
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def filter_unnotified(
+        self, query_key: str, listing_ids: Iterable[str], kind: str = "new"
+    ) -> list[str]:
+        ids = [str(item) for item in listing_ids if str(item)]
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT listing_id FROM notified_listings "
+                f"WHERE query_key = ? AND kind = ? AND listing_id IN ({placeholders})",
+                (query_key, kind, *ids),
+            ).fetchall()
+        sent = {row["listing_id"] for row in rows}
+        return [listing_id for listing_id in ids if listing_id not in sent]
+
+    def mark_notified(
+        self, query_key: str, listing_ids: Iterable[str], kind: str = "new"
+    ) -> None:
+        ids = [str(item) for item in listing_ids if str(item)]
+        if not ids:
+            return
+        now = iso_now()
+        with self._lock, self._conn:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO notified_listings"
+                "(query_key, listing_id, kind, notified_at) VALUES (?, ?, ?, ?)",
+                [(str(query_key), item, str(kind), now) for item in ids],
+            )
 
     def create_bot_job(
         self,
