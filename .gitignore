@@ -1,0 +1,37 @@
+__pycache__/
+*.py[cod]
+*.log
+
+.venv/
+.venv312/
+venv/
+/python/
+
+.playwright-browsers/
+.browser-profile/
+.link-browser-profile/
+.tmp/
+
+data/
+logs/
+exports/
+
+*.xlsx
+*.db
+*.db-wal
+*.db-shm
+
+# Содержит Telegram-токен и API; храните только локально.
+config.toml
+config.local.toml
+.env
+*.key
+*.pem
+
+# Документы и архивы, которые не являются частью кода.
+*.docx
+*.zip
+*.7z
+
+Thumbs.db
+.DS_Store

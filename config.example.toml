@@ -1,0 +1,75 @@
+# Avito Radar — локальные настройки.
+# Секреты сюда вписываются вручную. Не коммитьте config.toml с реальным токеном.
+
+[app]
+browser = "auto"
+accent = "auto"
+theme = "dark"
+name = "Avito Radar"
+database_path = "data/avito_radar.db"
+log_path = "logs/avito_radar.log"
+export_dir = "exports"
+max_listings = 50
+# Не присылать новые объявления старше этого возраста (в часах); 0 — отключить.
+fresh_hours = 3.0
+# Проверять снятие с публикации. Выключено, чтобы не было ложных «снято»
+# при неполном проходе страниц.
+missing_check = false
+# Сколько карточек за цикл открывать для уточнения даты; 0 — не открывать, -1 — все.
+date_enrich_limit = -1
+headless = false
+
+[notifications]
+new = true
+price = true
+# Присылать также объявления старше fresh_hours.
+old = true
+# date | price | market_diff
+sort = "date"
+# Присылать в боте тот же снимок, что и в таблице.
+snapshot = true
+# 0 — без ограничения.
+max_price = 0
+# Через запятую; пусто — без фильтра.
+keywords = ""
+
+[scraper]
+base_url = "https://www.avito.ru"
+# playwright — стабильный браузерный режим; http — быстрый эксперимент
+# через внутренний JSON Avito (может ждать блокировку IP).
+transport = "browser"
+auto_captcha = true
+http_delay_seconds = 10.0
+navigation_timeout_ms = 60000
+action_pause_min = 10.0
+action_pause_max = 20.0
+scroll_attempts = 3
+# Сколько карточек просматривать на одной странице, чтобы выбрать N подходящих.
+scan_limit = 50
+# Сколько секунд ждать проверку Avito. 0 — ждать без ограничения до прохождения
+# или нажатия «Стоп». Браузер при этом не закрывается.
+captcha_wait_seconds = 0
+# Держать окно Chromium за пределами экрана. При капче оно показывается.
+hidden_window = true
+show_on_captcha = true
+# Открывать карточку объявления, если в поисковой выдаче нет точной даты.
+enrich_missing_dates = true
+# Пауза только между карточками для уточнения даты (не влияет на поиск).
+date_lookup_pause_min = 1.0
+date_lookup_pause_max = 2.0
+
+[telegram]
+# Токен получается у @BotFather. Оставьте пустым, пока не готовы тестировать.
+bot_token = ""
+# Если api.telegram.org недоступен, разверните cloudflare-worker/ и укажите:
+# api_base = "https://<worker>.workers.dev/<PROXY_SECRET>"
+api_base = "https://api.telegram.org"
+proxy_url = ""
+poll_timeout_seconds = 25
+request_timeout_seconds = 15
+
+[defaults]
+mode = "once"
+interval_minutes = 0
+sort = "date"
+delivery = "any"
