@@ -106,7 +106,7 @@ class BotListener(threading.Thread):
             "keyboard": [
                 [{"text": "Новый запрос"}, {"text": "Мои запросы"}],
                 [{"text": "Статус"}, {"text": "Сводки"}],
-                [{"text": "Помощь"}],
+                [{"text": "Помощь"}, {"text": "Свернуть меню"}],
             ],
             "resize_keyboard": True,
             "is_persistent": True,
@@ -140,6 +140,13 @@ class BotListener(threading.Thread):
             logger.warning("Не удалось отправить подтверждение %s: %s", chat_id, exc)
         except Exception:
             logger.exception("Ошибка подтверждения подписки")
+
+    def _stop_job(self, job_id: int) -> None:
+        self.storage.update_bot_job(job_id, status="stopped")
+        state = self.storage.get_collector_state()
+        if state.get("kind") == "telegram" and int(state.get("job_id") or 0) == int(job_id):
+            self.storage.set_collector_state({"status": "idle"})
+        self._jobs_changed()
 
     def _jobs_changed(self) -> None:
         if self.on_jobs_changed:
@@ -366,9 +373,8 @@ class BotListener(threading.Thread):
             return
         action = parts[1]
         if action == "stop":
-            self.storage.update_bot_job(job_id, status="stopped")
+            self._stop_job(job_id)
             notifier.answer_callback_query(callback_id, "Остановлено")
-            self._jobs_changed()
             self._send_jobs_menu(chat_id)
             return
         if action == "restart":
@@ -501,6 +507,13 @@ class BotListener(threading.Thread):
         if action == "help":
             self._send_main_menu(chat_id, self._help_text())
             return
+        if action == "expand":
+            notifier.send_message(
+                chat_id,
+                "Меню развёрнуто.",
+                reply_markup=self._reply_keyboard(),
+            )
+            return
         if action == "cancel":
             state = self.storage.get_bot_state(chat_id) or {}
             if state.get("state") == "waiting_custom_interval":
@@ -523,6 +536,20 @@ class BotListener(threading.Thread):
         username = chat.get("username") or ""
         first_name = chat.get("first_name") or ""
         notifier = TelegramNotifier(self.config_path)
+        if text == "Свернуть меню":
+            notifier.send_message(
+                chat_id,
+                "Меню свёрнуто. Нажмите, чтобы развернуть.",
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "Развернуть меню", "callback_data": "menu:expand"}]
+                    ]
+                },
+            )
+            notifier.send_message(
+                chat_id, "Клавиатура скрыта.", reply_markup={"remove_keyboard": True}
+            )
+            return
         if text in {"Новый запрос", "Мои запросы", "Статус", "Сводки", "Помощь"}:
             if text == "Новый запрос":
                 if not self.storage.can_create_requests(chat_id):
@@ -672,8 +699,7 @@ class BotListener(threading.Thread):
             if not job or int(job["chat_id"]) != int(chat_id):
                 TelegramNotifier(self.config_path).send_message(chat_id, "Запрос не найден.")
                 return
-            self.storage.update_bot_job(job_id, status="stopped")
-            self._jobs_changed()
+            self._stop_job(job_id)
             TelegramNotifier(self.config_path).send_message(
                 chat_id, "Запрос остановлен."
             )

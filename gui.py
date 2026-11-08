@@ -3472,6 +3472,13 @@ class AvitoRadarApp(ctk.CTk):
                 and self.bot_manager.current_worker
             ):
                 self.bot_manager.current_worker.request_stop()
+        self.storage.set_collector_state({"status": "idle"})
+        self._last_worker_status = "Остановлено"
+        self.status_label.configure(
+            text="Остановлено",
+            fg_color=("#e7e7e7", "#2d2f31"),
+            text_color=("#333333", "#e0e0e0"),
+        )
         self._reload_query_cards()
         logger.info("Остановлен Telegram-запрос: %s", card.query_var.get()[:80])
 
