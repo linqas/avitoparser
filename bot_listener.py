@@ -101,12 +101,23 @@ class BotListener(threading.Thread):
         )
         return token, api_base, poll_timeout, request_timeout
 
+    def _reply_keyboard(self) -> dict[str, Any]:
+        return {
+            "keyboard": [
+                [{"text": "Новый запрос"}, {"text": "Мои запросы"}],
+                [{"text": "Статус"}, {"text": "Сводки"}],
+                [{"text": "Помощь"}],
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+
     def _main_menu_markup(self) -> dict[str, Any]:
         return {
             "inline_keyboard": [
-                [{"text": "Новое задание", "callback_data": "menu:new"}],
+                [{"text": "Новый запрос", "callback_data": "menu:new"}],
                 [
-                    {"text": "Мои задания", "callback_data": "menu:jobs"},
+                    {"text": "Мои запросы", "callback_data": "menu:jobs"},
                     {"text": "Статус", "callback_data": "menu:status"},
                 ],
                 [
@@ -122,8 +133,8 @@ class BotListener(threading.Thread):
             notifier.send_message(
                 chat_id,
                 "Avito Radar\n\n"
-                "Вы подписаны на уведомления. Выберите действие.",
-                reply_markup=self._main_menu_markup(),
+                "Вы подписаны на уведомления. Пользуйтесь кнопками внизу.",
+                reply_markup=self._reply_keyboard(),
             )
         except NotifierError as exc:
             logger.warning("Не удалось отправить подтверждение %s: %s", chat_id, exc)
@@ -135,7 +146,7 @@ class BotListener(threading.Thread):
             try:
                 self.on_jobs_changed()
             except Exception:
-                logger.debug("Ошибка обновления заданий в GUI", exc_info=True)
+                logger.debug("Ошибка обновления запросов в GUI", exc_info=True)
 
     def _send_job_menu(self, chat_id: int, job_id: int) -> None:
         markup = {
@@ -161,6 +172,13 @@ class BotListener(threading.Thread):
         )
 
     def _create_job_from_url(self, chat_id: int, username: str, url: str) -> None:
+        if not self.storage.can_create_requests(chat_id):
+            TelegramNotifier(self.config_path).send_message(
+                chat_id,
+                "Создавать запросы может только владелец "
+                "или пользователь из белого списка.",
+            )
+            return
         if not is_avito_search_url(url):
             TelegramNotifier(self.config_path).send_message(
                 chat_id,
@@ -189,7 +207,7 @@ class BotListener(threading.Thread):
             self._send_job_menu(chat_id, job_id)
             self._jobs_changed()
         except Exception as exc:
-            logger.warning("Не удалось создать задание Telegram: %s", redact_secrets(exc))
+            logger.warning("Не удалось создать запрос Telegram: %s", redact_secrets(exc))
             TelegramNotifier(self.config_path).send_message(
                 chat_id, f"Не удалось принять ссылку: {redact_secrets(exc)}"
             )
@@ -197,8 +215,8 @@ class BotListener(threading.Thread):
     def _format_jobs(self, chat_id: int) -> str:
         jobs = self.storage.list_bot_jobs(chat_id=chat_id)
         if not jobs:
-            return "У вас пока нет заданий."
-        lines = ["Ваши задания:"]
+            return "У вас пока нет запросов."
+        lines = ["Ваши запросы:"]
         status_labels = {
             "pending": "ожидает",
             "running": "выполняется",
@@ -216,7 +234,7 @@ class BotListener(threading.Thread):
             query = self.storage.get_saved_query(int(job["query_id"])) or {}
             title = str(query.get("query") or "Без названия")[:45]
             status = status_labels.get(str(job.get("status")), str(job.get("status")))
-            lines.append(f"#{job['id']} — {title} — {mode} — {status}")
+            lines.append(f"{title} — {mode} — {status}")
         return "\n".join(lines)
 
     def _status_text(self) -> str:
@@ -231,7 +249,7 @@ class BotListener(threading.Thread):
             if kind == "manual":
                 current = "выполняется ручной цикл приложения"
             else:
-                current = f"выполняется задание #{state.get('job_id')}"
+                current = "выполняется запрос"
             query = str(state.get("query") or "").strip()
             if query:
                 current += f"\nЗапрос: {query}"
@@ -245,7 +263,7 @@ class BotListener(threading.Thread):
                     pass
         else:
             current = "сейчас цикл не выполняется"
-        lines = [current, f"В очереди: {len(queue)} заданий"]
+        lines = [current, f"В очереди: {len(queue)} запросов"]
         next_run = ""
         for job in jobs:
             if job.get("next_run_at"):
@@ -271,7 +289,7 @@ class BotListener(threading.Thread):
             rows.append(
                 [
                     {
-                        "text": f"#{digest['id']} · {query} · {total} · {created}",
+                        "text": f" · {query} · {total} · {created}",
                         "callback_data": f"dg:{digest['id']}",
                     }
                 ]
@@ -314,17 +332,16 @@ class BotListener(threading.Thread):
             job_id = int(job["id"])
             rows.append(
                 [
-                    {"text": f"Стоп #{job_id}", "callback_data": f"jobctl:stop:{job_id}"},
-                    {"text": f"Интервал #{job_id}", "callback_data": f"jobctl:interval:{job_id}"},
+                    {"text": "Стоп", "callback_data": f"jobctl:stop:{job_id}"},
+                    {"text": "Интервал", "callback_data": f"jobctl:interval:{job_id}"},
                 ]
             )
             rows.append(
                 [
-                    {"text": f"Заново #{job_id}", "callback_data": f"jobctl:restart:{job_id}"},
-                    {"text": f"Ссылка #{job_id}", "callback_data": f"jobctl:link:{job_id}"},
+                    {"text": "Заново", "callback_data": f"jobctl:restart:{job_id}"},
+                    {"text": "Ссылка", "callback_data": f"jobctl:link:{job_id}"},
                 ]
             )
-        rows.extend(self._main_menu_markup()["inline_keyboard"])
         return {"inline_keyboard": rows}
 
     def _send_jobs_menu(self, chat_id: int) -> None:
@@ -345,7 +362,7 @@ class BotListener(threading.Thread):
             return
         job = self.storage.get_bot_job(job_id)
         if not job or int(job["chat_id"]) != int(chat_id):
-            notifier.answer_callback_query(callback_id, "Задание не найдено")
+            notifier.answer_callback_query(callback_id, "Запрос не найден")
             return
         action = parts[1]
         if action == "stop":
@@ -358,7 +375,7 @@ class BotListener(threading.Thread):
             self.storage.update_bot_job(
                 job_id, status="pending", first_run_done=0
             )
-            notifier.answer_callback_query(callback_id, "Задание в очереди")
+            notifier.answer_callback_query(callback_id, "Запрос в очереди")
             self._jobs_changed()
             self._send_jobs_menu(chat_id)
             return
@@ -395,7 +412,7 @@ class BotListener(threading.Thread):
             return
         job = self.storage.get_bot_job(job_id)
         if not job or int(job["chat_id"]) != int(chat_id):
-            notifier.answer_callback_query(callback_id, "Задание не найдено")
+            notifier.answer_callback_query(callback_id, "Запрос не найден")
             return
         mode = parts[1]
         if mode == "custom":
@@ -418,7 +435,7 @@ class BotListener(threading.Thread):
             self.storage.update_bot_job(job_id, mode="once", status="pending")
             notifier.answer_callback_query(callback_id, "Режим: один раз")
             self._send_main_menu(
-                chat_id, f"Задание #{job_id} создано: один раз."
+                chat_id, f"Запрос #{job_id} создано: один раз."
             )
         elif mode == "interval":
             try:
@@ -431,20 +448,18 @@ class BotListener(threading.Thread):
             )
             notifier.answer_callback_query(callback_id, f"Интервал: {minutes} мин")
             self._send_main_menu(
-                chat_id, f"Задание #{job_id} создано: каждые {minutes} мин."
+                chat_id, f"Запрос #{job_id} создано: каждые {minutes} мин."
             )
         self._jobs_changed()
 
     def _send_main_menu(self, chat_id: int, text: str) -> None:
-        TelegramNotifier(self.config_path).send_message(
-            chat_id, text, reply_markup=self._main_menu_markup()
-        )
+        TelegramNotifier(self.config_path).send_message(chat_id, text)
 
     def _help_text(self) -> str:
         return (
             "Avito Radar\n\n"
-            "Новое задание — пришлите ссылку Avito и выберите интервал.\n"
-            "Мои задания — список и управление.\n"
+            "Новый запрос — пришлите ссылку Avito и выберите интервал.\n"
+            "Мои запросы — список и управление.\n"
             "Статус — что выполняется сейчас.\n"
             "Сводки — последние уведомления.\n\n"
             "Команды: /add URL, /list, /status, /digests, /stop <номер>, /help."
@@ -455,6 +470,13 @@ class BotListener(threading.Thread):
     ) -> None:
         notifier.answer_callback_query(callback_id)
         if action == "new":
+            if not self.storage.can_create_requests(chat_id):
+                notifier.send_message(
+                    chat_id,
+                    "Создавать запросы может только владелец "
+                    "или пользователь из белого списка.",
+                )
+                return
             self.storage.set_bot_state(chat_id, "waiting_link")
             notifier.send_message(
                 chat_id,
@@ -500,6 +522,30 @@ class BotListener(threading.Thread):
         text = str(message.get("text") or "").strip()
         username = chat.get("username") or ""
         first_name = chat.get("first_name") or ""
+        notifier = TelegramNotifier(self.config_path)
+        if text in {"Новый запрос", "Мои запросы", "Статус", "Сводки", "Помощь"}:
+            if text == "Новый запрос":
+                if not self.storage.can_create_requests(chat_id):
+                    notifier.send_message(
+                        chat_id,
+                        "Создавать запросы может только владелец "
+                        "или пользователь из белого списка.",
+                    )
+                    return
+                self.storage.set_bot_state(chat_id, "waiting_link")
+                notifier.send_message(
+                    chat_id,
+                    "Пришлите ссылку на поиск Avito. Фильтры возьмутся из ссылки.",
+                )
+            elif text == "Мои запросы":
+                self._send_jobs_menu(chat_id)
+            elif text == "Статус":
+                self._send_status(chat_id)
+            elif text == "Сводки":
+                self._send_digests_list(chat_id)
+            else:
+                self._send_main_menu(chat_id, self._help_text())
+            return
         if text and is_avito_search_url(text):
             self.storage.clear_bot_state(chat_id)
             self._create_job_from_url(chat_id, username, text)
@@ -556,7 +602,7 @@ class BotListener(threading.Thread):
                 job_id = int(payload.get("job_id"))
             except (TypeError, ValueError, json.JSONDecodeError):
                 self.storage.clear_bot_state(chat_id)
-                self._send_main_menu(chat_id, "Не удалось определить задание.")
+                self._send_main_menu(chat_id, "Не удалось определить запрос.")
                 return
             minutes = int(text)
             self.storage.update_bot_job(
@@ -565,7 +611,7 @@ class BotListener(threading.Thread):
             self.storage.clear_bot_state(chat_id)
             self._jobs_changed()
             self._send_main_menu(
-                chat_id, f"Задание #{job_id} создано: каждые {minutes} мин."
+                chat_id, f"Запрос #{job_id} создано: каждые {minutes} мин."
             )
             return
         if state and state.get("state") == "waiting_link" and not text.startswith("/"):
@@ -603,21 +649,33 @@ class BotListener(threading.Thread):
             return
         if command == "/stop":
             _, _, value = text.partition(" ")
-            try:
+            job_id = None
+            if value.strip().lstrip("#").isdigit():
                 job_id = int(value.strip().lstrip("#"))
-            except ValueError:
+            else:
+                state = self.storage.get_collector_state()
+                if state.get("kind") == "telegram" and state.get("job_id"):
+                    job_id = int(state["job_id"])
+                else:
+                    running = [
+                        job for job in self.storage.list_bot_jobs(chat_id=chat_id)
+                        if str(job.get("status")) == "running"
+                    ]
+                    if running:
+                        job_id = int(running[0]["id"])
+            if job_id is None:
                 TelegramNotifier(self.config_path).send_message(
-                    chat_id, "Использование: /stop <номер задания>"
+                    chat_id, "Сейчас нет выполняющегося запроса."
                 )
                 return
             job = self.storage.get_bot_job(job_id)
             if not job or int(job["chat_id"]) != int(chat_id):
-                TelegramNotifier(self.config_path).send_message(chat_id, "Задание не найдено.")
+                TelegramNotifier(self.config_path).send_message(chat_id, "Запрос не найден.")
                 return
             self.storage.update_bot_job(job_id, status="stopped")
             self._jobs_changed()
             TelegramNotifier(self.config_path).send_message(
-                chat_id, f"Задание #{job_id} остановлено."
+                chat_id, "Запрос остановлен."
             )
             return
 

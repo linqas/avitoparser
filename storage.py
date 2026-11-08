@@ -66,7 +66,9 @@ CREATE TABLE IF NOT EXISTS subscribers (
     first_name    TEXT NOT NULL DEFAULT '',
     subscribed_at TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
-    is_active     INTEGER NOT NULL DEFAULT 1
+    is_active     INTEGER NOT NULL DEFAULT 1,
+    can_create    INTEGER NOT NULL DEFAULT 0,
+    role          TEXT NOT NULL DEFAULT 'user'
 );
 
 CREATE TABLE IF NOT EXISTS saved_queries (
@@ -230,6 +232,12 @@ class Storage:
             )
             self._ensure_column(
                 "saved_queries", "origin", "TEXT NOT NULL DEFAULT 'app'"
+            )
+            self._ensure_column(
+                "subscribers", "can_create", "INTEGER NOT NULL DEFAULT 0"
+            )
+            self._ensure_column(
+                "subscribers", "role", "TEXT NOT NULL DEFAULT 'user'"
             )
             for column, default in (
                 ("notify_new", 1),
@@ -927,6 +935,41 @@ class Storage:
         with self._lock:
             rows = self._conn.execute(query).fetchall()
             return [dict(row) for row in rows]
+
+    def get_bot_owner(self) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM subscribers WHERE role = 'owner' LIMIT 1"
+            ).fetchone()
+            return dict(row) if row else None
+
+    def set_bot_owner(self, chat_id: int) -> None:
+        with self._lock, self._conn:
+            now = iso_now()
+            self._conn.execute(
+                "UPDATE subscribers SET role = 'user', updated_at = ?", (now,)
+            )
+            self._conn.execute(
+                "UPDATE subscribers SET role = 'owner', can_create = 1, "
+                "updated_at = ? WHERE chat_id = ?",
+                (now, int(chat_id)),
+            )
+
+    def set_can_create(self, chat_id: int, allowed: bool) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE subscribers SET can_create = ?, updated_at = ? "
+                "WHERE chat_id = ? AND role <> 'owner'",
+                (1 if allowed else 0, iso_now(), int(chat_id)),
+            )
+
+    def can_create_requests(self, chat_id: int) -> bool:
+        subscriber = self.get_subscriber(chat_id)
+        if not subscriber:
+            return False
+        if str(subscriber.get("role") or "") == "owner":
+            return True
+        return bool(subscriber.get("can_create"))
 
     def set_subscriber_active(self, chat_id: int, active: bool) -> None:
         with self._lock, self._conn:

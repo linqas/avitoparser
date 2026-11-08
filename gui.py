@@ -1234,9 +1234,11 @@ class BotJobManager(threading.Thread):
         )
         worker.start()
         worker.join()
+        latest = self.storage.get_bot_job(int(job["id"])) or {}
+        stopped = str(latest.get("status") or "") == "stopped"
         self.storage.update_bot_job(
             int(job["id"]),
-            status="done" if job["mode"] == "once" else "stopped",
+            status="stopped" if stopped else ("done" if job["mode"] == "once" else "stopped"),
             first_run_done=1,
             last_run_at=datetime.now().isoformat(timespec="seconds"),
         )
@@ -1399,6 +1401,18 @@ class QueryCard(ctk.CTkFrame):
             text_color=("#246b24", "#b9e3b9"),
             command=self._preview,
         ).pack(side="left")
+        if getattr(self, "origin", "app") == "telegram":
+            ctk.CTkButton(
+                actions,
+                text="Остановить",
+                width=100,
+                height=25,
+                font=ctk.CTkFont(size=11),
+                fg_color=("#f2e3c2", "#4a3b1d"),
+                hover_color=("#e5d3aa", "#5c4a24"),
+                text_color=("#7a5200", "#ffe0a3"),
+                command=lambda: self.app._stop_telegram_query(self),
+            ).pack(side="left", padx=(6, 0))
         ctk.CTkButton(
             actions,
             text="Удалить",
@@ -3441,6 +3455,26 @@ class AvitoRadarApp(ctk.CTk):
         self._refresh_query_options()
         logger.info("Удалён запрос: %s", title[:80])
 
+    def _stop_telegram_query(self, card: QueryCard) -> None:
+        if card.db_id is None:
+            return
+        jobs = [
+            job for job in self.storage.list_bot_jobs()
+            if int(job.get("query_id") or 0) == int(card.db_id)
+        ]
+        for job in jobs:
+            self.storage.update_bot_job(int(job["id"]), status="stopped")
+        if getattr(self, "bot_manager", None):
+            self.bot_manager.wake()
+            if (
+                self.bot_manager.current_job_id
+                and any(int(job["id"]) == self.bot_manager.current_job_id for job in jobs)
+                and self.bot_manager.current_worker
+            ):
+                self.bot_manager.current_worker.request_stop()
+        self._reload_query_cards()
+        logger.info("Остановлен Telegram-запрос: %s", card.query_var.get()[:80])
+
     def _schedule_queries_save(self) -> None:
         if self._closing:
             return
@@ -3608,6 +3642,46 @@ class AvitoRadarApp(ctk.CTk):
             )
             checkbox.pack(anchor="w", padx=10, pady=4)
             self.recipient_vars[chat_id] = variable
+            access_var = ctk.BooleanVar(
+                value=bool(subscriber.get("can_create"))
+                or str(subscriber.get("role") or "") == "owner"
+            )
+            access = ctk.CTkCheckBox(
+                self.recipients_frame,
+                text="Может создавать запросы",
+                variable=access_var,
+                font=ctk.CTkFont(size=10),
+                state="disabled" if str(subscriber.get("role") or "") == "owner" else "normal",
+                command=lambda cid=chat_id, var=access_var: (
+                    self.storage.set_can_create(cid, bool(var.get())),
+                    self._refresh_recipients(),
+                ),
+            )
+            access.pack(anchor="w", padx=32, pady=(0, 3))
+        owner = self.storage.get_bot_owner()
+        owner_values = {
+            Storage.subscriber_label(sub): int(sub["chat_id"])
+            for sub in subscribers
+        }
+        owner_row = ctk.CTkFrame(self.recipients_frame, fg_color="transparent")
+        owner_row.pack(fill="x", padx=10, pady=(4, 8))
+        ctk.CTkLabel(owner_row, text="Владелец бота", width=110, anchor="w").pack(side="left")
+        owner_var = ctk.StringVar(
+            value=Storage.subscriber_label(owner) if owner else "Не назначен"
+        )
+        owner_menu = ctk.CTkOptionMenu(
+            owner_row,
+            values=["Не назначен", *owner_values],
+            variable=owner_var,
+            width=190,
+            command=lambda value: (
+                self.storage.set_bot_owner(owner_values[value])
+                if value in owner_values
+                else None,
+                self._refresh_recipients(),
+            ),
+        )
+        owner_menu.pack(side="left", padx=(6, 0))
         self._recipients_loaded = True
 
     def _selected_recipients(self) -> list[int]:

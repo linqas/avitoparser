@@ -25,7 +25,7 @@ SORT_LABELS = {
     "Цена ↑": "price_asc",
     "Цена ↓": "price_desc",
     "Дата": "date",
-    "%Выгоды от рынка": "market_diff",
+    "По размеру скидки": "market_diff",
 }
 SORT_DEFAULT = "market_diff"
 
@@ -309,7 +309,7 @@ class ListingsTable(ctk.CTkFrame):
             command=self._on_sort,
             width=390,
         )
-        self.sort_segment.set("%Выгоды от рынка")
+        self.sort_segment.set("По размеру скидки")
         self.sort_segment.pack(side="right")
         self.count_label = ctk.CTkLabel(
             top, text="0 объявлений", text_color=("#4a4a4a", "#b8b8b8")
@@ -473,7 +473,7 @@ class ListingsTable(ctk.CTkFrame):
             else "market_diff"
         )
         reverse = {value: label for label, value in SORT_LABELS.items()}
-        self.sort_segment.set(reverse.get(self._sort_key, "%Выгоды от рынка"))
+        self.sort_segment.set(reverse.get(self._sort_key, "По размеру скидки"))
         self.refresh()
 
     def set_listings(self, listings: Iterable[dict[str, Any]]) -> None:
@@ -939,7 +939,7 @@ class MarketTable(ctk.CTkFrame):
         self.sort_segment = ctk.CTkSegmentedButton(
             top, values=list(SORT_LABELS), command=self._on_sort, width=390
         )
-        self.sort_segment.set("%Выгоды от рынка")
+        self.sort_segment.set("По размеру скидки")
         self.sort_segment.pack(side="right", padx=(0, 10))
         self._rows: list[dict[str, Any]] = []
         self._query_key = ""
@@ -1165,7 +1165,7 @@ class RejectedTable(ctk.CTkFrame):
         self.sort_segment = ctk.CTkSegmentedButton(
             top, values=list(SORT_LABELS), command=self._on_sort, width=390
         )
-        self.sort_segment.set("%Выгоды от рынка")
+        self.sort_segment.set("По размеру скидки")
         self.sort_segment.pack(side="right", padx=(0, 10))
 
         container = tk.Frame(self, bg="#1d1e1e", highlightthickness=0)
