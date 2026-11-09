@@ -1046,8 +1046,22 @@ class MonitorWorker(threading.Thread):
             transport = str(
                 self.config.get("scraper", {}).get("transport", "playwright")
             ).lower()
-            logger.info("Транспорт сбора: %s", transport)
-            if transport in {"http", "auto", "aggressive"} and HttpAvitoScraper is not None:
+            strategy = str(
+                self.config.get("scraper", {}).get("captcha_strategy", "legacy")
+            ).lower()
+            retry_minutes = max(
+                1,
+                int(
+                    self.config.get("scraper", {}).get("captcha_retry_minutes", 10)
+                    if strategy != "legacy"
+                    else 5
+                ),
+            )
+            logger.info("Транспорт сбора: %s; стратегия капчи: %s", transport, strategy)
+            if (
+                strategy in {"auto_only", "manual_then_auto"}
+                or transport in {"http", "auto", "aggressive"}
+            ) and HttpAvitoScraper is not None:
                 scraper_class = HttpAvitoScraper
             else:
                 scraper_class = AvitoScraper
@@ -1090,7 +1104,8 @@ class MonitorWorker(threading.Thread):
                     else:
                         # После ошибки/капчи не долбим Avito каждые 5 секунд.
                         self._wait_minutes(
-                            5, "После ошибки или блокировки пауза 5 минут."
+                            retry_minutes,
+                            f"После ошибки или блокировки пауза {retry_minutes} минут.",
                         )
                     continue
                 if cycle_ok or self.interval_minutes >= 5:
@@ -1100,7 +1115,8 @@ class MonitorWorker(threading.Thread):
                     )
                 else:
                     self._wait_minutes(
-                        5, "После ошибки или блокировки пауза 5 минут."
+                        retry_minutes,
+                        f"После ошибки или блокировки пауза {retry_minutes} минут.",
                     )
             if reason == "Работа завершена" and self.stop_event.is_set():
                 reason = "Остановлено пользователем"

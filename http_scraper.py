@@ -66,7 +66,11 @@ class HttpAvitoScraper:
         self._resolved: dict[str, Any] = {}
         self._fallback: AvitoScraper | None = None
         transport = str(scraper_config.get("transport", "auto")).lower()
-        self.allow_fallback = transport == "auto"
+        self.captcha_strategy = str(
+            scraper_config.get("captcha_strategy", "legacy")
+        ).lower()
+        self.allow_fallback = transport == "auto" and self.captcha_strategy != "auto_only"
+        self._manual_retry_done = False
         os.environ["AVITO_FAST_FALLBACK"] = "1" if self.allow_fallback else "0"
         self._closed = False
 
@@ -286,6 +290,33 @@ class HttpAvitoScraper:
                 category=category,
             )
             self._persist_browser_cookies()
+            if (
+                self.captcha_strategy == "manual_then_auto"
+                and not self._manual_retry_done
+            ):
+                self._manual_retry_done = True
+                self.allow_fallback = False
+                self.client.save_cookies()
+                self.client = CalmClient(
+                    delay=self.delay,
+                    log=self._event,
+                    cookie_path=str(self.cookie_path),
+                )
+                logger.info(
+                    "Ручная проверка пройдена; cookies переданы в HTTP, повторяю запрос"
+                )
+                return self.search(
+                    query,
+                    city=city,
+                    price_min=price_min,
+                    price_max=price_max,
+                    limit=limit,
+                    local_priority=local_priority,
+                    direct_url=direct_url,
+                    pages=pages,
+                    avito_sort=avito_sort,
+                    category=category,
+                )
             return result
 
     def enrich_listing_dates(self, listings: list[dict[str, Any]]) -> None:

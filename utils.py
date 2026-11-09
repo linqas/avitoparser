@@ -59,6 +59,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "scraper": {
         "base_url": "https://www.avito.ru",
         "transport": "auto",
+        "captcha_strategy": "legacy",
+        "captcha_retry_minutes": 10,
+        "captcha_fail_alert_after": 3,
         "auto_captcha": True,
         "http_delay_seconds": 5.0,
         "navigation_timeout_ms": 60000,
