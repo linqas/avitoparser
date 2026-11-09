@@ -1140,7 +1140,7 @@ class MonitorWorker(threading.Thread):
                             f"После ошибки или блокировки пауза {retry_minutes} минут.",
                         )
                     continue
-                if cycle_ok or self.interval_minutes >= 5:
+                if cycle_ok:
                     self._wait_minutes(
                         self.interval_minutes,
                         f"Перерыв {self.interval_minutes} мин.",
@@ -1148,7 +1148,7 @@ class MonitorWorker(threading.Thread):
                 else:
                     self._wait_minutes(
                         retry_minutes,
-                        f"После ошибки или блокировки пауза {retry_minutes} минут.",
+                        f"После ошибки пауза {retry_minutes} минут. Затем новый цикл.",
                     )
             if reason == "Работа завершена" and self.stop_event.is_set():
                 reason = "Остановлено пользователем"
