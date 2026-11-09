@@ -296,7 +296,6 @@ class HttpAvitoScraper:
             ):
                 self._manual_retry_done = True
                 self.allow_fallback = False
-                self.client.save_cookies()
                 self.client = CalmClient(
                     delay=self.delay,
                     log=self._event,
