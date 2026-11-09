@@ -674,11 +674,7 @@ class MonitorWorker(threading.Thread):
                     listing["_scope"] = "all"
                 listing["_query_key"] = query_key
                 listing["_query_label"] = query
-            if (
-                criteria.city
-                and (not query_config.source_url or broad)
-                and len(filter_result.accepted) < query_config.max_listings
-            ):
+            if criteria.city and (not query_config.source_url or broad):
                 fallback_criteria = replace(filter_criteria, city="")
                 logger.info(
                     "В городе «%s» подходит %s из %s; добираю объявления из других городов",
@@ -2731,6 +2727,7 @@ class AvitoRadarApp(ctk.CTk):
         strategy_row = ctk.CTkFrame(
             self.settings_window_content, fg_color="transparent"
         )
+        self.strategy_row = strategy_row
         strategy_row.pack(fill="x", padx=12, pady=(2, 2))
         ctk.CTkLabel(strategy_row, text="Стратегия капчи", width=130, anchor="w").pack(side="left")
         self.captcha_strategy_labels = {
@@ -2741,7 +2738,7 @@ class AvitoRadarApp(ctk.CTk):
         current_strategy = str(
             self.config.get("scraper", {}).get("captcha_strategy", "legacy")
         )
-        strategy_var = ctk.StringVar(
+        self.strategy_var = ctk.StringVar(
             value=next(
                 (label for label, value in self.captcha_strategy_labels.items()
                  if value == current_strategy),
@@ -2751,13 +2748,23 @@ class AvitoRadarApp(ctk.CTk):
         strategy_menu = ctk.CTkOptionMenu(
             strategy_row,
             values=list(self.captcha_strategy_labels),
-            variable=strategy_var,
+            variable=self.strategy_var,
             width=230,
             command=lambda label: self._on_captcha_strategy_change(
                 self.captcha_strategy_labels.get(label, "legacy")
             ),
         )
         strategy_menu.pack(side="left")
+        self.strategy_hint = ctk.CTkLabel(
+            self.settings_window_content,
+            text="Старое поведение: HTTP, при неудаче — браузер. Без новых правил.",
+            font=ctk.CTkFont(size=10),
+            text_color=("#777777", "#8f8f8f"),
+            anchor="w",
+            justify="left",
+            wraplength=395,
+        )
+        self.strategy_hint.pack(fill="x", padx=12, pady=(0, 3))
         self.transport_hint = ctk.CTkLabel(
             self.settings_window_content,
             text="",
@@ -2768,6 +2775,7 @@ class AvitoRadarApp(ctk.CTk):
             wraplength=395,
         )
         self.transport_hint.pack(fill="x", padx=12, pady=(0, 3))
+        self._update_strategy_visibility()
         self.auto_captcha_var = ctk.BooleanVar(
             value=bool(self.config.get("scraper", {}).get("auto_captcha", True))
         )
@@ -3807,6 +3815,23 @@ class AvitoRadarApp(ctk.CTk):
             )
         self.transport_hint.configure(text=text)
 
+    def _update_strategy_visibility(self) -> None:
+        if not hasattr(self, "strategy_row"):
+            return
+        auto = self.transport_labels.get(self.transport_var.get(), "auto") == "auto"
+        if auto:
+            if not self.strategy_row.winfo_manager():
+                self.strategy_row.pack(
+                    fill="x", padx=12, pady=(2, 2), before=self.transport_hint
+                )
+            if not self.strategy_hint.winfo_manager():
+                self.strategy_hint.pack(
+                    fill="x", padx=12, pady=(0, 3), before=self.transport_hint
+                )
+        else:
+            self.strategy_row.pack_forget()
+            self.strategy_hint.pack_forget()
+
     def _on_captcha_strategy_change(self, value: str) -> None:
         try:
             save_scraper_setting(self.config_path, "captcha_strategy", value)
@@ -3814,6 +3839,13 @@ class AvitoRadarApp(ctk.CTk):
             messagebox.showerror("Avito Radar", f"Не удалось сохранить стратегию:\n{exc}")
             return
         self.config.setdefault("scraper", {})["captcha_strategy"] = value
+        descriptions = {
+            "legacy": "Старое поведение: HTTP, при неудаче — браузер. Без новых правил.",
+            "manual_then_auto": "Сначала ручная проверка в браузере, затем автоматические попытки.",
+            "auto_only": "Только автоматические попытки без открытия браузера.",
+        }
+        if hasattr(self, "strategy_hint"):
+            self.strategy_hint.configure(text=descriptions.get(value, ""))
         self.status_label.configure(text="Стратегия капчи сохранена")
 
     def _on_transport_change(self, label: str) -> None:
@@ -3827,6 +3859,7 @@ class AvitoRadarApp(ctk.CTk):
             return
         self.config.setdefault("scraper", {})["transport"] = value
         self._refresh_transport_hint()
+        self._update_strategy_visibility()
         logger.info("Метод парсинга изменён на %s", value)
         self.status_label.configure(text=f"Метод парсинга: {label} (со следующего запуска)")
 
