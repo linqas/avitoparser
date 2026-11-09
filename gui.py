@@ -2695,6 +2695,36 @@ class AvitoRadarApp(ctk.CTk):
             dynamic_resizing=False,
         )
         self.transport_menu.pack(side="left")
+        strategy_row = ctk.CTkFrame(
+            self.settings_window_content, fg_color="transparent"
+        )
+        strategy_row.pack(fill="x", padx=12, pady=(2, 2))
+        ctk.CTkLabel(strategy_row, text="Стратегия капчи", width=130, anchor="w").pack(side="left")
+        self.captcha_strategy_labels = {
+            "Как сейчас": "legacy",
+            "Ручная + авто": "manual_then_auto",
+            "Только авто": "auto_only",
+        }
+        current_strategy = str(
+            self.config.get("scraper", {}).get("captcha_strategy", "legacy")
+        )
+        strategy_var = ctk.StringVar(
+            value=next(
+                (label for label, value in self.captcha_strategy_labels.items()
+                 if value == current_strategy),
+                "Как сейчас",
+            )
+        )
+        strategy_menu = ctk.CTkOptionMenu(
+            strategy_row,
+            values=list(self.captcha_strategy_labels),
+            variable=strategy_var,
+            width=230,
+            command=lambda label: self._on_captcha_strategy_change(
+                self.captcha_strategy_labels.get(label, "legacy")
+            ),
+        )
+        strategy_menu.pack(side="left")
         self.transport_hint = ctk.CTkLabel(
             self.settings_window_content,
             text="",
@@ -3743,6 +3773,15 @@ class AvitoRadarApp(ctk.CTk):
                 + ("Авто-капча включена." if auto else "Авто-капча выключена.")
             )
         self.transport_hint.configure(text=text)
+
+    def _on_captcha_strategy_change(self, value: str) -> None:
+        try:
+            save_scraper_setting(self.config_path, "captcha_strategy", value)
+        except Exception as exc:
+            messagebox.showerror("Avito Radar", f"Не удалось сохранить стратегию:\n{exc}")
+            return
+        self.config.setdefault("scraper", {})["captcha_strategy"] = value
+        self.status_label.configure(text="Стратегия капчи сохранена")
 
     def _on_transport_change(self, label: str) -> None:
         value = self.transport_labels.get(label, "auto")

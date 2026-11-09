@@ -285,7 +285,9 @@ def save_gmt_offset(path: str | Path, hours: Any) -> float:
 
 def save_scraper_setting(path: str | Path, key: str, value: Any) -> None:
     """Точечно сохраняет скаляр [scraper], не теряя комментарии config."""
-    if key not in {"transport", "auto_captcha", "http_delay_seconds"}:
+    if key not in {
+        "transport", "auto_captcha", "http_delay_seconds", "captcha_strategy"
+    }:
         raise ValueError(f"Недопустимая настройка scraper: {key}")
     if isinstance(value, bool):
         rendered = "true" if value else "false"
