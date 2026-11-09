@@ -1056,6 +1056,9 @@ class MonitorWorker(threading.Thread):
                 ),
             )
             logger.info("Транспорт сбора: %s; стратегия капчи: %s", transport, strategy)
+            if strategy in {"auto_only", "manual_then_auto"}:
+                # Новые стратегии всегда делают полный первый снимок.
+                self.notifications["snapshot"] = True
             if (
                 strategy in {"auto_only", "manual_then_auto"}
                 or transport in {"http", "auto", "aggressive"}
