@@ -192,6 +192,8 @@ class MonitorWorker(threading.Thread):
         self.on_browser_visibility = on_browser_visibility
         self.stop_event = threading.Event()
         self._reported_messages: set[str] = set()
+        self._captcha_failures = 0
+        self._captcha_alert_sent = False
         self._scraper: AvitoScraper | None = None
         self._auto_export_path = APP_DIR / "exports" / "avito_radar_auto.xlsx"
         self._last_rejected: list[dict[str, Any]] = []
@@ -1085,6 +1087,37 @@ class MonitorWorker(threading.Thread):
 
             while not self.stop_event.is_set():
                 cycle_ok = self._run_cycle()
+                if strategy != "legacy":
+                    if cycle_ok:
+                        self._captcha_failures = 0
+                        self._captcha_alert_sent = False
+                    else:
+                        self._captcha_failures += 1
+                        alert_after = max(
+                            1,
+                            int(
+                                self.config.get("scraper", {}).get(
+                                    "captcha_fail_alert_after", 3
+                                )
+                            ),
+                        )
+                        if (
+                            self._captcha_failures >= alert_after
+                            and not self._captcha_alert_sent
+                        ):
+                            self._captcha_alert_sent = True
+                            text = (
+                                "Не удалось автоматически пройти проверку Avito "
+                                f"{self._captcha_failures} раз. "
+                                "Продолжаю попытки с паузой."
+                            )
+                            for chat_id in self.recipients:
+                                try:
+                                    self.notifier.send_message(
+                                        chat_id, text, disable_notification=True
+                                    )
+                                except Exception as exc:
+                                    logger.debug("Тихое уведомление не отправлено: %s", exc)
                 if self.stop_event.is_set():
                     reason = "Остановлено пользователем"
                     break

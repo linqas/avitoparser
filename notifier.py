@@ -366,6 +366,7 @@ class TelegramNotifier:
         *,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = None,
+        disable_notification: bool = False,
     ) -> int:
         token, api_base, timeout = self._settings()
         if not token:
@@ -384,6 +385,8 @@ class TelegramNotifier:
             "text": truncate_message(text),
             "disable_web_page_preview": True,
         }
+        if disable_notification:
+            payload["disable_notification"] = True
         if reply_markup:
             payload["reply_markup"] = reply_markup
         if parse_mode:
